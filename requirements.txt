@@ -1,7 +1,6 @@
 streamlit
-langchain
-langchain-groq
-langchain-community
+groq
+sentence-transformers
 faiss-cpu
 pypdf
-sentence-transformers
+numpy
