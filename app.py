@@ -54,14 +54,17 @@ if uploaded_file:
         query_embedding = embed_model.encode([query])
         D, I = index.search(np.array(query_embedding).astype('float32'), k=2)
         context = " ".join([chunks[i] for i in I[0]])
-
+# Add this above the response = client.chat.completions.create line:
+if not context.strip():
+    st.error("I couldn't find any relevant text in the PDF. Try a different file.")
+    st.stop()
         # B. Ask Groq using the context
         response = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": f"Answer based ONLY on this text: {context}"},
                 {"role": "user", "content": query}
             ],
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
         )
         
         st.chat_message("user").write(query)
