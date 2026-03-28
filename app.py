@@ -1,87 +1,68 @@
 import streamlit as st
-import os
-from langchain_groq import ChatGroq
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
+from groq import Groq
+from sentence_transformers import SentenceTransformer
+import faiss
+from pypdf import PdfReader
+import numpy as np
 
-# 1. Page Configuration
-st.set_page_config(page_title="LegalGuard AI", layout="wide")
-st.title("⚖️ LegalGuard: Enterprise Contract Intelligence")
+st.set_page_config(page_title="LegalGuard Lite", layout="wide")
+st.title("⚖️ LegalGuard AI (High-Speed)")
 
-# 2. Access the Secret Key
-# This pulls the key you just saved in the Streamlit "Secrets" menu
+# 1. Access Secret Key
 try:
-    groq_api_key = st.secrets["GROQ_API_KEY"]
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
-    st.error("Please add your GROQ_API_KEY to Streamlit Secrets.")
+    st.error("Missing GROQ_API_KEY in Secrets!")
     st.stop()
 
-# 3. Sidebar for File Upload
+# 2. Load the Embedding Model (Free & Local)
+@st.cache_resource
+def load_embed_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+embed_model = load_embed_model()
+
+# 3. PDF Processing Logic
+def process_pdf(file):
+    reader = PdfReader(file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text()
+    
+    # Split text into chunks manually
+    chunks = [text[i:i+1000] for i in range(0, len(text), 800)]
+    
+    # Convert chunks to numbers (embeddings)
+    embeddings = embed_model.encode(chunks)
+    
+    # Build a Search Index
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(np.array(embeddings).astype('float32'))
+    
+    return chunks, index
+
+# 4. Sidebar & Upload
 with st.sidebar:
-    st.header("Upload Center")
-    uploaded_file = st.file_uploader("Upload Legal Contract (PDF)", type="pdf")
+    uploaded_file = st.file_uploader("Upload Contract", type="pdf")
 
-# 4. Processing Logic (Cached for Speed)
-@st.cache_resource(show_spinner="Analyzing document...")
-def process_pdf(file_content):
-    # Save uploaded file to a temporary location
-    with open("temp.pdf", "wb") as f:
-        f.write(file_content)
-    
-    # Load and split the PDF into small chunks
-    loader = PyPDFLoader("temp.pdf")
-    data = loader.load()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = text_splitter.split_documents(data)
-    
-    # Create Embeddings for free using HuggingFace
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    
-    # Store chunks in a searchable vector database
-    return FAISS.from_documents(chunks, embeddings)
-
-# 5. The RAG Chat Interface
 if uploaded_file:
-    # Build the database
-    vector_db = process_pdf(uploaded_file.getbuffer())
+    chunks, index = process_pdf(uploaded_file)
     
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    if query := st.chat_input("Ask about the legal terms..."):
+        # A. Search the PDF for the answer
+        query_embedding = embed_model.encode([query])
+        D, I = index.search(np.array(query_embedding).astype('float32'), k=2)
+        context = " ".join([chunks[i] for i in I[0]])
 
-    # Display history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # User Input
-    if query := st.chat_input("Ask a question about the contract..."):
-        st.session_state.messages.append({"role": "user", "content": query})
-        with st.chat_message("user"):
-            st.markdown(query)
-
-        with st.chat_message("assistant"):
-            # Link to Groq Llama 3
-            llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama3-8b-8192")
-            
-            # Create the "Search + Answer" chain
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=llm, 
-                retriever=vector_db.as_retriever(search_kwargs={"k": 3})
-            )
-            
-            # Execute the RAG process
-            response = qa_chain.invoke(query)
-            answer = response["result"]
-            st.write(answer)
-            
-            # Show the exact source for transparency
-            with st.expander("View Source Material"):
-                docs = vector_db.similarity_search(query)
-                for i, doc in enumerate(docs[:2]):
-                    st.markdown(f"**Source {i+1}:**\n{doc.page_content}...")
-
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        # B. Ask Groq using the context
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": f"Answer based ONLY on this text: {context}"},
+                {"role": "user", "content": query}
+            ],
+            model="llama3-8b-8192",
+        )
+        
+        st.chat_message("user").write(query)
+        st.chat_message("assistant").write(response.choices[0].message.content)
