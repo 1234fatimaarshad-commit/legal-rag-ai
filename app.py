@@ -7,7 +7,7 @@ import numpy as np
 
 # 1. Page Configuration
 st.set_page_config(page_title="LegalGuard AI", page_icon="⚖️", layout="wide")
-st.title("⚖️ LegalGuard AI (with Memory)")
+st.title("⚖️ Legal RAG AI ")
 
 # 2. Access Secret Key
 try:
